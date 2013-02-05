@@ -70,6 +70,45 @@ static char operationKey;
     }
 }
 
+- (void)setImageWithURL:(NSURL *)url placeholderImage:(UIImage *)placeholder key:(NSString *)key options:(SDWebImageOptions)options progress:(SDWebImageDownloaderProgressBlock)progressBlock completed:(SDWebImageCompletedBlock)completedBlock
+{
+    [self cancelCurrentImageLoad];
+    
+    self.image = placeholder;
+    
+    __weak UIImageView *wself = self;
+    [[SDImageCache sharedImageCache] queryDiskCacheForKey:key done:^(UIImage *image, SDImageCacheType cacheType) {
+        __strong UIImageView *sself = wself;
+        if (!sself) return;
+        if (image)
+        {
+            sself.image = image;
+            [sself setNeedsLayout];
+        } else {
+            if (url)
+            {
+                __weak UIImageView *wwself = sself;
+                id<SDWebImageOperation> operation = [SDWebImageManager.sharedManager downloadWithURL:url options:options progress:progressBlock completed:^(UIImage *image, NSError *error, SDImageCacheType cacheType, BOOL finished)
+                                                     {
+                                                         __strong UIImageView *ssself = wwself;
+                                                         if (!ssself) return;
+                                                         if (image)
+                                                         {
+                                                             ssself.image = image;
+                                                             [ssself setNeedsLayout];
+                                                         }
+                                                         if (completedBlock && finished)
+                                                         {
+                                                             completedBlock(image, error, cacheType);
+                                                         }
+                                                     }];
+                objc_setAssociatedObject(self, &operationKey, operation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            
+        }
+    }];
+}
+
 - (void)cancelCurrentImageLoad
 {
     // Cancel in progress downloader from queue

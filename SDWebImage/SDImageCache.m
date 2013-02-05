@@ -190,6 +190,27 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
     });
 }
 
+- (UIImage *)queryDiskCacheSynchronouslyForKey:(NSString *)key
+{
+    if (!key)
+    {
+        return nil;
+    }
+    
+    // First check the in-memory cache...
+    UIImage *image = [self imageFromMemoryCacheForKey:key];
+    if (image)
+    {
+        return image;
+    }
+    UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
+    if (diskImage) {
+        CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+        [self.memCache setObject:diskImage forKey:key cost:cost];
+    }
+    return diskImage;
+}
+
 - (void)removeImageForKey:(NSString *)key
 {
     [self removeImageForKey:key fromDisk:YES];
