@@ -63,6 +63,43 @@ static char operationKey;
     }
 }
 
+- (void)setImageWithURL:(NSURL *)url forState:(UIControlState)state placeholderImage:(UIImage *)placeholder key:(NSString *)key options:(SDWebImageOptions)options completed:(SDWebImageCompletedBlock)completedBlock
+{
+    [self cancelCurrentImageLoad];
+    
+    [self setImage:placeholder forState:state];
+    
+    __weak UIButton *wself = self;
+    [[SDImageCache sharedImageCache] queryDiskCacheForKey:key done:^(UIImage *image, SDImageCacheType cacheType) {
+        __strong UIButton *sself = wself;
+        if (!sself) return;
+        if (image)
+        {
+            [sself setImage:image forState:state];
+        } else {
+            if (url)
+            {
+                __weak UIButton *wwself = sself;
+                id<SDWebImageOperation> operation = [SDWebImageManager.sharedManager downloadWithURL:url options:options progress:nil completed:^(UIImage *image, NSError *error, SDImageCacheType cacheType, BOOL finished)
+                                                     {
+                                                         __strong UIButton *ssself = wwself;
+                                                         if (!ssself) return;
+                                                         if (image)
+                                                         {
+                                                             [ssself setImage:image forState:state];
+                                                         }
+                                                         if (completedBlock && finished)
+                                                         {
+                                                             completedBlock(image, error, cacheType);
+                                                         }
+                                                     }];
+                objc_setAssociatedObject(self, &operationKey, operation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            
+        }
+    }];
+}
+
 - (void)setBackgroundImageWithURL:(NSURL *)url forState:(UIControlState)state
 {
     [self setBackgroundImageWithURL:url forState:state placeholderImage:nil options:0 completed:nil];
