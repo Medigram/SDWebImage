@@ -169,6 +169,7 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
     UIImage *image = [self imageFromMemoryCacheForKey:key];
     if (image)
     {
+        //DLog(@"found image in memory cache for key %@!", key);
         doneBlock(image, SDImageCacheTypeMemory);
         return;
     }
@@ -182,6 +183,8 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
             CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
             [self.memCache setObject:diskImage forKey:key cost:cost];
         }
+        
+        //DLog(@"found image %@ on disk for key %@!", diskImage, key);
 
         dispatch_async(dispatch_get_main_queue(), ^
         {
@@ -194,6 +197,7 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
 {
     if (!key)
     {
+        //DLog(@"no key given to cache");
         return nil;
     }
     
@@ -201,11 +205,13 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
     UIImage *image = [self imageFromMemoryCacheForKey:key];
     if (image)
     {
+        //DLog(@"found image in memory cache for key %@!", key);
         return image;
     }
     UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
     if (diskImage) {
         CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+        //DLog(@"found image in from disk for key %@!", key);
         [self.memCache setObject:diskImage forKey:key cost:cost];
     }
     return diskImage;
