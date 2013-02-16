@@ -12,6 +12,9 @@
 #import "SDWebImageDecoder.h"
 #import <mach/mach.h>
 #import <mach/mach_host.h>
+#import "RNEncryptor.h"
+#import "RNDecryptor.h"
+#import "MGCoreDataManager.h"
 
 static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
 
@@ -133,8 +136,11 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
                 {
                     [fileManager createDirectoryAtPath:_diskCachePath withIntermediateDirectories:YES attributes:nil error:NULL];
                 }
-
-                [fileManager createFileAtPath:[self cachePathForKey:key] contents:data attributes:nil];
+                
+                NSError *error;
+                NSData *encryptedData = [RNEncryptor encryptData:data withSettings:kRNCryptorAES256Settings encryptionKey:[[MGCoreDataManager sharedInstance] encryptionKey] HMACKey:[[MGCoreDataManager sharedInstance] HMACKey] error:&error];
+                
+                [fileManager createFileAtPath:[self cachePathForKey:key] contents:encryptedData attributes:nil];
             }
         });
     }
@@ -176,16 +182,21 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
 
     dispatch_async(self.ioQueue, ^
     {
-        UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
-
-        if (diskImage)
-        {
-            CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
-            [self.memCache setObject:diskImage forKey:key cost:cost];
-        }
+        NSData *encryptedData = [NSData dataWithContentsOfFile:[self cachePathForKey:key]];
+        NSError *error;
+        NSData *plainText = [RNDecryptor decryptData:encryptedData withEncryptionKey:[[MGCoreDataManager sharedInstance] encryptionKey] HMACKey:[[MGCoreDataManager sharedInstance] HMACKey] error:&error];
         
-        //DLog(@"found image %@ on disk for key %@!", diskImage, key);
+        UIImage *diskImage = nil;
+        if (plainText.length != 0) {
+            diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, plainText)];
 
+            if (diskImage)
+            {
+                CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+                [self.memCache setObject:diskImage forKey:key cost:cost];
+            }
+            //DLog(@"found image in from disk for key %@ %f %f!", key, diskImage.size.width, diskImage.size.height);
+        }
         dispatch_async(dispatch_get_main_queue(), ^
         {
             doneBlock(diskImage, SDImageCacheTypeDisk);
@@ -208,11 +219,19 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
         //DLog(@"found image in memory cache for key %@!", key);
         return image;
     }
-    UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
-    if (diskImage) {
-        CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
-        //DLog(@"found image in from disk for key %@!", key);
-        [self.memCache setObject:diskImage forKey:key cost:cost];
+    
+    NSData *encryptedData = [NSData dataWithContentsOfFile:[self cachePathForKey:key]];
+    NSError *error;
+    NSData *plainText = [RNDecryptor decryptData:encryptedData withEncryptionKey:[[MGCoreDataManager sharedInstance] encryptionKey] HMACKey:[[MGCoreDataManager sharedInstance] HMACKey] error:&error];
+    
+    UIImage *diskImage = nil;
+    if (plainText.length != 0) {
+        diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, plainText)];
+        if (diskImage) {
+            CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+            //DLog(@"found image in from disk for key %@ %f %f!", key, diskImage.size.width, diskImage.size.height);
+            [self.memCache setObject:diskImage forKey:key cost:cost];
+        }
     }
     return diskImage;
 }
