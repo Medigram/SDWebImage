@@ -12,6 +12,9 @@
 #import "SDWebImageDecoder.h"
 #import <mach/mach.h>
 #import <mach/mach_host.h>
+#import "RNEncryptor.h"
+#import "RNDecryptor.h"
+#import "MGCoreDataManager.h"
 
 static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
 
@@ -133,8 +136,11 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
                 {
                     [fileManager createDirectoryAtPath:_diskCachePath withIntermediateDirectories:YES attributes:nil error:NULL];
                 }
-
-                [fileManager createFileAtPath:[self cachePathForKey:key] contents:data attributes:nil];
+                
+                NSError *error;
+                NSData *encryptedData = [RNEncryptor encryptData:data withSettings:kRNCryptorAES256Settings encryptionKey:[[MGCoreDataManager sharedInstance] encryptionKey] HMACKey:[[MGCoreDataManager sharedInstance] HMACKey] error:&error];
+                
+                [fileManager createFileAtPath:[self cachePathForKey:key] contents:encryptedData attributes:nil];
             }
         });
     }
@@ -153,6 +159,27 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
 - (UIImage *)imageFromMemoryCacheForKey:(NSString *)key
 {
     return [self.memCache objectForKey:key];
+}
+
+- (UIImage *)imageFromDiskCacheForKey:(NSString *)key
+{
+    // First check the in-memory cache...
+    UIImage *image = [self imageFromMemoryCacheForKey:key];
+    if (image)
+    {
+        return image;
+    }
+    
+    // Second check the disk cache...
+    UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
+    
+    if (diskImage)
+    {
+        CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+        [self.memCache setObject:diskImage forKey:key cost:cost];
+    }
+    
+    return diskImage;
 }
 
 - (void)queryDiskCacheForKey:(NSString *)key done:(void (^)(UIImage *image, SDImageCacheType cacheType))doneBlock
@@ -176,16 +203,21 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
 
     dispatch_async(self.ioQueue, ^
     {
-        UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
-
-        if (diskImage)
-        {
-            CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
-            [self.memCache setObject:diskImage forKey:key cost:cost];
-        }
+        NSData *encryptedData = [NSData dataWithContentsOfFile:[self cachePathForKey:key]];
+        NSError *error;
+        NSData *plainText = [RNDecryptor decryptData:encryptedData withEncryptionKey:[[MGCoreDataManager sharedInstance] encryptionKey] HMACKey:[[MGCoreDataManager sharedInstance] HMACKey] error:&error];
         
-        //DLog(@"found image %@ on disk for key %@!", diskImage, key);
+        UIImage *diskImage = nil;
+        if (plainText.length != 0) {
+            diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, plainText)];
 
+            if (diskImage)
+            {
+                CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+                [self.memCache setObject:diskImage forKey:key cost:cost];
+            }
+            //DLog(@"found image in from disk for key %@ %f %f!", key, diskImage.size.width, diskImage.size.height);
+        }
         dispatch_async(dispatch_get_main_queue(), ^
         {
             doneBlock(diskImage, SDImageCacheTypeDisk);
@@ -208,11 +240,19 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
         //DLog(@"found image in memory cache for key %@!", key);
         return image;
     }
-    UIImage *diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, [NSData dataWithContentsOfFile:[self cachePathForKey:key]])];
-    if (diskImage) {
-        CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
-        //DLog(@"found image in from disk for key %@!", key);
-        [self.memCache setObject:diskImage forKey:key cost:cost];
+    
+    NSData *encryptedData = [NSData dataWithContentsOfFile:[self cachePathForKey:key]];
+    NSError *error;
+    NSData *plainText = [RNDecryptor decryptData:encryptedData withEncryptionKey:[[MGCoreDataManager sharedInstance] encryptionKey] HMACKey:[[MGCoreDataManager sharedInstance] HMACKey] error:&error];
+    
+    UIImage *diskImage = nil;
+    if (plainText.length != 0) {
+        diskImage = [UIImage decodedImageWithImage:SDScaledImageForPath(key, plainText)];
+        if (diskImage) {
+            CGFloat cost = diskImage.size.height * diskImage.size.width * diskImage.scale;
+            //DLog(@"found image in from disk for key %@ %f %f!", key, diskImage.size.width, diskImage.size.height);
+            [self.memCache setObject:diskImage forKey:key cost:cost];
+        }
     }
     return diskImage;
 }
@@ -262,14 +302,29 @@ static const NSInteger kDefaultCacheMaxCacheAge = 60 * 60 * 24 * 7; // 1 week
     dispatch_async(self.ioQueue, ^
     {
         NSDate *expirationDate = [NSDate dateWithTimeIntervalSinceNow:-self.maxCacheAge];
-        NSDirectoryEnumerator *fileEnumerator = [[NSFileManager defaultManager] enumeratorAtPath:self.diskCachePath];
-        for (NSString *fileName in fileEnumerator)
+        // convert NSString path to NSURL path
+        NSURL *diskCacheURL = [NSURL fileURLWithPath:self.diskCachePath isDirectory:YES];
+        // build an enumerator by also prefetching file properties we want to read
+        NSDirectoryEnumerator *fileEnumerator = [[NSFileManager defaultManager] enumeratorAtURL:diskCacheURL
+                                                                     includingPropertiesForKeys:@[ NSURLIsDirectoryKey, NSURLContentModificationDateKey ]
+                                                                                        options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                                   errorHandler:NULL];
+        for (NSURL *fileURL in fileEnumerator)
         {
-            NSString *filePath = [self.diskCachePath stringByAppendingPathComponent:fileName];
-            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:filePath error:nil];
-            if ([[[attrs fileModificationDate] laterDate:expirationDate] isEqualToDate:expirationDate])
+            // skip folder
+            NSNumber *isDirectory;
+            [fileURL getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:NULL];
+            if ([isDirectory boolValue])
             {
-                [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+                continue;
+            }
+            
+            // compare file date with the max age
+            NSDate *fileModificationDate;
+            [fileURL getResourceValue:&fileModificationDate forKey:NSURLContentModificationDateKey error:NULL];
+            if ([[fileModificationDate laterDate:expirationDate] isEqualToDate:expirationDate])
+            {
+                [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
             }
         }
     });
